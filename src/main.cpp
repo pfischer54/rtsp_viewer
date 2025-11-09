@@ -1,14 +1,30 @@
-// Minimal GStreamer RTSP viewer with hardware decoding (nvh264dec)
 #include <gst/gst.h>
+#include <gtk/gtk.h>
 #include <iostream>
 #include <string>
-#include <thread>
-#include <atomic>
-#include <chrono>
 
-std::atomic<bool> running{true};
+struct AppData {
+    GtkApplication *app = nullptr;
+    GtkWindow *window = nullptr;
+    GtkPicture *picture = nullptr;
+    GtkButton *start_button = nullptr;
+    GtkButton *stop_button = nullptr;
+
+    GstElement *pipeline = nullptr;
+    GstElement *sink = nullptr;
+    std::string url = "rtsp://192.168.1.100:8554/quality_h264";
+    gint latency_ms = 10;
+};
+
+static void start_stream(AppData *app);
+static void stop_stream(AppData *app);
+static gboolean ensure_pipeline(AppData *app);
+static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data);
 
 static gboolean bus_cb(GstBus *bus, GstMessage *msg, gpointer user_data) {
+    (void)bus;
+    AppData *app = static_cast<AppData*>(user_data);
+
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_ERROR: {
             GError *err = nullptr;
@@ -20,54 +36,245 @@ static gboolean bus_cb(GstBus *bus, GstMessage *msg, gpointer user_data) {
                 g_free(dbg);
             }
             if (err) g_error_free(err);
-            running = false;
+            stop_stream(app);
             break;
         }
         case GST_MESSAGE_EOS:
             std::cout << "[INFO] End of stream\n";
-            running = false;
+            stop_stream(app);
             break;
+        case GST_MESSAGE_STATE_CHANGED: {
+            GstState old_state, new_state, pending;
+            if (GST_MESSAGE_SRC(msg) == GST_OBJECT(app->pipeline)) {
+                gst_message_parse_state_changed(msg, &old_state, &new_state, &pending);
+                std::cout << "[STATE] "
+                          << gst_element_state_get_name(old_state) << " -> "
+                          << gst_element_state_get_name(new_state)
+                          << " [pending: " << gst_element_state_get_name(pending) << "]\n";
+            }
+            break;
+        }
         default:
             break;
     }
+
+    return G_SOURCE_CONTINUE;
+}
+
+static void ensure_paintable(AppData *app) {
+    if (!app->sink || !app->picture)
+        return;
+
+    GdkPaintable *paintable = nullptr;
+    g_object_get(app->sink, "paintable", &paintable, NULL);
+    if (paintable) {
+        gtk_picture_set_paintable(app->picture, paintable);
+        g_object_unref(paintable);
+    }
+}
+
+static void on_sink_paintable_notify(GObject *object, GParamSpec *pspec, gpointer user_data) {
+    (void)object;
+    (void)pspec;
+    ensure_paintable(static_cast<AppData*>(user_data));
+}
+
+static gboolean ensure_pipeline(AppData *app) {
+    if (app->pipeline)
+        return TRUE;
+
+    app->pipeline = gst_pipeline_new("rtsp-pipeline");
+    GstElement *src = gst_element_factory_make("rtspsrc", "source");
+    GstElement *depay = gst_element_factory_make("rtph264depay", "depay");
+    GstElement *parse = gst_element_factory_make("h264parse", "parse");
+    GstElement *dec = gst_element_factory_make("nvh264dec", "decoder");
+    GstElement *convert = gst_element_factory_make("videoconvert", "convert");
+    app->sink = gst_element_factory_make("gtk4paintablesink", "sink");
+
+    if (!app->pipeline || !src || !depay || !parse || !dec || !convert || !app->sink) {
+        std::cerr << "[ERROR] Failed to create pipeline elements. Ensure gstreamer1.0-gtk4 is installed.\n";
+        if (app->pipeline) {
+            gst_object_unref(app->pipeline);
+            app->pipeline = nullptr;
+        }
+        return FALSE;
+    }
+
+    g_object_set(src,
+                 "location", app->url.c_str(),
+                 "latency", app->latency_ms,
+                 "protocols", 0x00000003, // allow UDP and TCP
+                 NULL);
+
+    gst_bin_add_many(GST_BIN(app->pipeline), src, depay, parse, dec, convert, app->sink, NULL);
+
+    if (!gst_element_link_many(depay, parse, dec, convert, app->sink, NULL)) {
+        std::cerr << "[ERROR] Failed to link downstream elements.\n";
+        gst_object_unref(app->pipeline);
+        app->pipeline = nullptr;
+        return FALSE;
+    }
+
+    g_signal_connect(src, "pad-added", G_CALLBACK(on_pad_added), depay);
+    g_signal_connect(app->sink, "notify::paintable", G_CALLBACK(on_sink_paintable_notify), app);
+
+    GstBus *bus = gst_element_get_bus(app->pipeline);
+    gst_bus_add_watch(bus, bus_cb, app);
+    gst_object_unref(bus);
+
+    ensure_paintable(app);
     return TRUE;
+}
+
+static inline bool widget_is_ready(GtkWidget *widget) {
+    return widget && GTK_IS_WIDGET(widget);
+}
+
+static void start_stream(AppData *app) {
+    if (!ensure_pipeline(app))
+        return;
+
+    ensure_paintable(app);
+
+    GstStateChangeReturn ret = gst_element_set_state(app->pipeline, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        std::cerr << "[ERROR] Unable to set pipeline to PLAYING.\n";
+        gst_element_set_state(app->pipeline, GST_STATE_NULL);
+        return;
+    }
+
+    if (widget_is_ready(reinterpret_cast<GtkWidget*>(app->start_button))) {
+        gtk_widget_set_sensitive(GTK_WIDGET(app->start_button), FALSE);
+    }
+    if (widget_is_ready(reinterpret_cast<GtkWidget*>(app->stop_button))) {
+        gtk_widget_set_sensitive(GTK_WIDGET(app->stop_button), TRUE);
+    }
+}
+
+static void stop_stream(AppData *app) {
+    if (!app->pipeline)
+        return;
+
+    gst_element_set_state(app->pipeline, GST_STATE_NULL);
+
+    if (widget_is_ready(reinterpret_cast<GtkWidget*>(app->start_button))) {
+        gtk_widget_set_sensitive(GTK_WIDGET(app->start_button), TRUE);
+    }
+    if (widget_is_ready(reinterpret_cast<GtkWidget*>(app->stop_button))) {
+        gtk_widget_set_sensitive(GTK_WIDGET(app->stop_button), FALSE);
+    }
+}
+
+static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data) {
+    (void)element;
+    GstElement *depay = GST_ELEMENT(user_data);
+    GstPad *sinkpad = gst_element_get_static_pad(depay, "sink");
+    if (!sinkpad)
+        return;
+
+    if (gst_pad_is_linked(sinkpad)) {
+        gst_object_unref(sinkpad);
+        return;
+    }
+
+    if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK) {
+        std::cerr << "[WARN] Failed to link dynamic RTSP pad.\n";
+    }
+
+    gst_object_unref(sinkpad);
+}
+
+static void on_start_clicked(GtkButton *button, gpointer user_data) {
+    (void)button;
+    start_stream(static_cast<AppData*>(user_data));
+}
+
+static void on_stop_clicked(GtkButton *button, gpointer user_data) {
+    (void)button;
+    stop_stream(static_cast<AppData*>(user_data));
+}
+
+static void on_app_shutdown(GApplication *gapp, gpointer user_data) {
+    (void)gapp;
+    stop_stream(static_cast<AppData*>(user_data));
+}
+
+static void on_app_activate(GApplication *gapp, gpointer user_data) {
+    AppData *app = static_cast<AppData*>(user_data);
+
+    app->window = GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(gapp)));
+    gtk_window_set_title(app->window, "RTSP Viewer");
+    gtk_window_set_default_size(app->window, 1280, 720);
+
+    GtkWidget *root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_window_set_child(app->window, root_box);
+
+    app->picture = GTK_PICTURE(gtk_picture_new());
+    gtk_widget_set_hexpand(GTK_WIDGET(app->picture), TRUE);
+    gtk_widget_set_vexpand(GTK_WIDGET(app->picture), TRUE);
+    gtk_box_append(GTK_BOX(root_box), GTK_WIDGET(app->picture));
+
+    GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(root_box), button_box);
+
+    app->start_button = GTK_BUTTON(gtk_button_new_with_label("Start Stream"));
+    app->stop_button = GTK_BUTTON(gtk_button_new_with_label("Stop Stream"));
+
+    gtk_widget_set_sensitive(GTK_WIDGET(app->stop_button), FALSE);
+
+    gtk_box_append(GTK_BOX(button_box), GTK_WIDGET(app->start_button));
+    gtk_box_append(GTK_BOX(button_box), GTK_WIDGET(app->stop_button));
+
+    g_signal_connect(app->start_button, "clicked", G_CALLBACK(on_start_clicked), app);
+    g_signal_connect(app->stop_button, "clicked", G_CALLBACK(on_stop_clicked), app);
+
+    g_object_add_weak_pointer(G_OBJECT(app->start_button), reinterpret_cast<gpointer*>(&app->start_button));
+    g_object_add_weak_pointer(G_OBJECT(app->stop_button), reinterpret_cast<gpointer*>(&app->stop_button));
+
+    gtk_widget_show(GTK_WIDGET(app->window));
+
+    // Auto-start to match previous behaviour
+    start_stream(app);
+}
+
+static int on_command_line(GApplication *gapp, GApplicationCommandLine *cmdline, gpointer user_data) {
+    AppData *app = static_cast<AppData*>(user_data);
+
+    gchar **argv = nullptr;
+    gint argc = 0;
+    argv = g_application_command_line_get_arguments(cmdline, &argc);
+
+    if (argc > 1)
+        app->url = argv[1];
+    if (argc > 2)
+        app->latency_ms = std::stoi(argv[2]);
+
+    g_strfreev(argv);
+    g_application_activate(gapp);
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
     gst_init(&argc, &argv);
 
-    std::string url = "rtsp://192.168.1.100:8554/quality_h264";
-    if (argc > 1) url = argv[1];
+    AppData app{};
 
-    std::string pipeline_desc =
-        "rtspsrc location=" + url +
-        " latency=10 ! rtph264depay ! h264parse ! nvh264dec ! videoconvert ! autovideosink sync=false";
+    GtkApplication *gtk_app = gtk_application_new("com.example.rtsp_viewer", G_APPLICATION_HANDLES_COMMAND_LINE);
+    app.app = gtk_app;
 
-    GError *err = nullptr;
-    GstElement *pipeline = gst_parse_launch(pipeline_desc.c_str(), &err);
-    if (!pipeline) {
-        std::cerr << "[FATAL] Failed to create pipeline: "
-                  << (err ? err->message : "unknown") << "\n";
-        if (err) g_error_free(err);
-        return 1;
+    g_signal_connect(gtk_app, "command-line", G_CALLBACK(on_command_line), &app);
+    g_signal_connect(gtk_app, "activate", G_CALLBACK(on_app_activate), &app);
+    g_signal_connect(gtk_app, "shutdown", G_CALLBACK(on_app_shutdown), &app);
+
+    int status = g_application_run(G_APPLICATION(gtk_app), argc, argv);
+
+    stop_stream(&app);
+
+    if (app.pipeline) {
+        gst_object_unref(app.pipeline);
+        app.pipeline = nullptr;
     }
 
-    GstBus *bus = gst_element_get_bus(pipeline);
-    gst_bus_add_watch(bus, bus_cb, nullptr);
-    gst_object_unref(bus);
-
-    gst_element_set_state(pipeline, GST_STATE_PLAYING);
-
-    std::cout << "Streaming from: " << url << "\n";
-    std::cout << "Press Ctrl+C to stop.\n";
-
-    while (running) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-
-    gst_element_set_state(pipeline, GST_STATE_NULL);
-    gst_object_unref(pipeline);
-
-    std::cout << "Stopped.\n";
-    return 0;
+    g_object_unref(gtk_app);
+    return status;
 }
