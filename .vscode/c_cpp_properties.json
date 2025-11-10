@@ -7,7 +7,17 @@
                 "/usr/include/gstreamer-1.0",
                 "/usr/include/glib-2.0",
                 "/usr/lib/x86_64-linux-gnu/glib-2.0/include",
-                "/usr/include/orc-0.4"
+                "/usr/include/orc-0.4",
+                "/usr/include/gtk-4.0",
+                "/usr/include/pango-1.0",
+                "/usr/include/harfbuzz",
+                "/usr/include/cairo",
+                "/usr/include/gdk-pixbuf-2.0",
+                "/usr/include/graphene-1.0",
+                "/usr/lib/x86_64-linux-gnu/graphene-1.0/include",
+                "/home/patrick/.local/gstreamer-1.24/include",
+                "/home/patrick/.local/gstreamer-1.24/include/gstreamer-1.0",
+                "/home/patrick/.local/gstreamer-1.24/lib/x86_64-linux-gnu/glib-2.0/include"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/g++",
