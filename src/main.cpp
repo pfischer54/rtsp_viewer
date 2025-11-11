@@ -3,10 +3,6 @@
 #include <iostream>
 #include <string>
 
-// Ultra-Low Latency RTSP Viewer
-// Optimized for <10ms glass-to-glass latency on local networks
-// Requires stable network - no buffering or retransmission
-
 struct AppData {
     GtkApplication *app = nullptr;
     GtkWindow *window = nullptr;
@@ -17,7 +13,7 @@ struct AppData {
     GstElement *pipeline = nullptr;
     GstElement *sink = nullptr;
     std::string url = "rtsp://192.168.1.100:8554/quality_h264";
-    gint latency_ms = 0;  // Ultra-low latency mode
+    gint latency_ms = 5;  // Test: reduced from 10ms
 };
 
 static void start_stream(AppData *app);
@@ -104,23 +100,22 @@ static gboolean ensure_pipeline(AppData *app) {
         return FALSE;
     }
 
-    // Ultra-low latency configuration
     g_object_set(src,
                  "location", app->url.c_str(),
                  "latency", app->latency_ms,
-                 "protocols", 0x00000001,  // UDP only for minimum latency
-                 "drop-on-latency", TRUE,   // Drop packets rather than buffer
-                 "do-retransmission", FALSE, // No retransmission delays
+                 "protocols", 0x00000001,  // Test: UDP only
+                 "drop-on-latency", TRUE,  // Test: drop packets rather than buffer
+                 "do-retransmission", FALSE,  // Test: disable retransmission requests
                  NULL);
 
-    // Configure decoder for minimum latency
+    // Test: Configure decoder for minimum display delay
     g_object_set(dec,
                  "max-display-delay", 0,
                  NULL);
 
-    // Configure parser for low-latency mode
+    // Test: Configure parser to avoid SPS/PPS reinjection overhead
     g_object_set(parse,
-                 "config-interval", -1,  // Don't insert SPS/PPS periodically
+                 "config-interval", -1,
                  NULL);
 
     gst_bin_add_many(GST_BIN(app->pipeline), src, depay, parse, dec, convert, app->sink, NULL);
@@ -135,7 +130,7 @@ static gboolean ensure_pipeline(AppData *app) {
     g_signal_connect(src, "pad-added", G_CALLBACK(on_pad_added), depay);
     g_signal_connect(app->sink, "notify::paintable", G_CALLBACK(on_sink_paintable_notify), app);
 
-    // Set pipeline latency to minimum
+    // Test: Set pipeline latency to minimum
     gst_pipeline_set_latency(GST_PIPELINE(app->pipeline), 0);
 
     GstBus *bus = gst_element_get_bus(app->pipeline);
