@@ -243,30 +243,10 @@ static void on_app_activate(GApplication *gapp, gpointer user_data) {
     g_signal_connect(app->start_button, "clicked", G_CALLBACK(on_start_clicked), app);
     g_signal_connect(app->stop_button, "clicked", G_CALLBACK(on_stop_clicked), app);
 
-    g_object_add_weak_pointer(G_OBJECT(app->start_button), reinterpret_cast<gpointer*>(&app->start_button));
-    g_object_add_weak_pointer(G_OBJECT(app->stop_button), reinterpret_cast<gpointer*>(&app->stop_button));
-
     gtk_widget_show(GTK_WIDGET(app->window));
 
-    // Auto-start to match previous behaviour
+    // Auto-start stream on launch
     start_stream(app);
-}
-
-static int on_command_line(GApplication *gapp, GApplicationCommandLine *cmdline, gpointer user_data) {
-    AppData *app = static_cast<AppData*>(user_data);
-
-    gchar **argv = nullptr;
-    gint argc = 0;
-    argv = g_application_command_line_get_arguments(cmdline, &argc);
-
-    if (argc > 1)
-        app->url = argv[1];
-    if (argc > 2)
-        app->latency_ms = std::stoi(argv[2]);
-
-    g_strfreev(argv);
-    g_application_activate(gapp);
-    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -274,10 +254,15 @@ int main(int argc, char *argv[]) {
 
     AppData app{};
 
-    GtkApplication *gtk_app = gtk_application_new("com.example.rtsp_viewer", G_APPLICATION_HANDLES_COMMAND_LINE);
+    // Parse command-line arguments
+    if (argc > 1)
+        app.url = argv[1];
+    if (argc > 2)
+        app.latency_ms = std::stoi(argv[2]);
+
+    GtkApplication *gtk_app = gtk_application_new("com.example.rtsp_viewer", G_APPLICATION_FLAGS_NONE);
     app.app = gtk_app;
 
-    g_signal_connect(gtk_app, "command-line", G_CALLBACK(on_command_line), &app);
     g_signal_connect(gtk_app, "activate", G_CALLBACK(on_app_activate), &app);
     g_signal_connect(gtk_app, "shutdown", G_CALLBACK(on_app_shutdown), &app);
 
