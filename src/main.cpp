@@ -205,8 +205,8 @@ static gboolean ensure_pipeline(AppData *app) {
     // Connect callback for when video frames become available
     g_signal_connect(app->sink, "notify::paintable", G_CALLBACK(on_sink_paintable_notify), app);
 
-    // Set pipeline-level latency to minimum
-    gst_pipeline_set_latency(GST_PIPELINE(app->pipeline), 0);
+    // Note: Pipeline latency is auto-negotiated by GStreamer
+    // Forcing it to 0 causes frame drops - let the pipeline decide
 
     // Attach bus watch for messages (errors, state changes, etc.)
     GstBus *bus = gst_element_get_bus(app->pipeline);

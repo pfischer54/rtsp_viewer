@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/CppConsoleApp.dir/src/main.cpp.o -o CppConsoleApp 
